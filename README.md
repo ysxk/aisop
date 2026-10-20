@@ -12,7 +12,7 @@ internal/
   auth/                   认证 repository / service / handler、会话、登录限流
   category/               分类 repository / service / handler、公开读取与管理
   config/                 环境变量解析与校验
-  database/               PostgreSQL 连接、事务迁移与 migrations/*.sql
+  database/               PostgreSQL 连接与初始建表脚本 migrations/001_initial.sql
   httpapi/                严格 JSON 解码、统一错误、分页、请求 ID
   media/                  媒体 repository / service / handler、检查、删除队列
   product/                商品 repository / service / handler、媒体关联
@@ -20,12 +20,12 @@ internal/
   testutil/               随机独立 schema 的 PostgreSQL 测试工具
 .github/workflows/ci.yml   Go 检查和 PostgreSQL 16 集成测试
 Dockerfile                多阶段构建与非 root 运行镜像
-compose.yaml              PostgreSQL、一次性迁移、应用和持久卷
+compose.yaml              PostgreSQL、一次性数据库初始化、应用和持久卷
 ```
 
 ## 本地启动
 
-需要 Go 1.26、PostgreSQL 16+、Bash、curl，以及自行安装的 [jq](https://jqlang.org/)。curl 示例使用 `--fail-with-body`（curl 7.76+）。先准备一个专用数据库及有迁移建表权限的数据库角色；本地原生运行的数据库须能从 `DATABASE_URL` 指定地址访问。
+需要 Go 1.26、PostgreSQL 16+、Bash、curl，以及自行安装的 [jq](https://jqlang.org/)。curl 示例使用 `--fail-with-body`（curl 7.76+）。先准备一个专用空数据库及有建表权限的数据库角色；本地原生运行的数据库须能从 `DATABASE_URL` 指定地址访问。
 
 ```bash
 git clone https://github.com/ysxk/aisop.git
@@ -59,7 +59,7 @@ unset ADMIN_USERNAME ADMIN_PASSWORD
 ./bin/aisop serve
 ```
 
-用户名先去除首尾空白，长度须为 1–100 个字符；密码为 **12–72 字节**，不是字符数，且不去除空白。数据库强制仅有一个管理员，没有注册或管理员管理接口。`bootstrap-admin` 在管理员已存在时拒绝执行，**不是密码重置命令**。迁移可重复执行；`serve` 不会替你执行迁移。
+用户名先去除首尾空白，长度须为 1–100 个字符；密码为 **12–72 字节**，不是字符数，且不去除空白。数据库强制仅有一个管理员，没有注册或管理员管理接口。`bootstrap-admin` 在管理员已存在时拒绝执行，**不是密码重置命令**。`migrate` 用于首次创建当前数据库结构，可重复执行；`serve` 不会替你初始化数据库。
 
 启动后可检查：
 
@@ -94,7 +94,7 @@ curl --fail-with-body --silent --show-error http://127.0.0.1:8080/openapi.yaml
 
 ## 完整 curl 工作流
 
-在另一个 Bash 终端、仓库根目录执行以下各段，保持同一个 shell 会话。服务已完成迁移和管理员初始化。准备一个实际 JPEG/PNG/GIF/WebP 图片供上传；以下登录、上传、商品和媒体响应均为**直接对象**，没有 `data` 包装。
+在另一个 Bash 终端、仓库根目录执行以下各段，保持同一个 shell 会话。服务已完成数据库和管理员初始化。准备一个实际 JPEG/PNG/GIF/WebP 图片供上传；以下登录、上传、商品和媒体响应均为**直接对象**，没有 `data` 包装。
 
 ### 1. 登录并读取当前管理员
 
@@ -235,7 +235,7 @@ unset -f login auth_curl
 
 分类为**平级分类**，每个商品可属于一个分类，也可不分类。分类名称去除首尾空白后须唯一（大小写敏感，1–100 字符），公开描述最多 2000 字符，`sort_order` 为非负整数、默认 0。分类元数据均可公开读取，包括没有上架商品的分类；不要把内部备注写入分类描述。分类列表按 `sort_order ASC,name ASC,id ASC` 排列。
 
-升级已有部署时，先备份并停止应用，使用新版二进制执行 `./bin/aisop migrate`，再启动服务。新增 `003_categories.sql` 迁移不会删除或修改已有商品内容，原有商品默认未分类。
+当前尚未上线，数据库结构直接维护在 `internal/database/migrations/001_initial.sql`，不提供历史版本升级兼容。首次运行使用 `./bin/aisop migrate` 初始化完整结构，分类表与商品分类字段一次创建。
 
 商品创建和 PATCH 接受 `category_id`：
 
@@ -342,7 +342,7 @@ curl --fail-with-body --silent --show-error http://127.0.0.1:8080/readyz
 docker compose down
 ```
 
-Dockerfile 以 Go 1.26 多阶段构建，运行镜像为 Debian bookworm-slim，使用 **UID/GID 10001:10001**，`/data/media` 已设置可写所有权。ENTRYPOINT 是 `aisop`，支持默认 `serve`、`migrate`、`bootstrap-admin`；迁移和 OpenAPI 已嵌入二进制，无需运行时复制源码。
+Dockerfile 以 Go 1.26 多阶段构建，运行镜像为 Debian bookworm-slim，使用 **UID/GID 10001:10001**，`/data/media` 已设置可写所有权。ENTRYPOINT 是 `aisop`，支持默认 `serve`、`migrate`、`bootstrap-admin`；初始建表 SQL 和 OpenAPI 已嵌入二进制，无需运行时复制源码。
 
 Compose 使用 PostgreSQL 16，数据库 `aisop`、角色 `aisop`；数据库与媒体分别落在命名卷 `postgres_data`、`media_data`。数据库默认**不映射宿主端口**，应用默认只绑定 `127.0.0.1:8080`（可用 `APP_BIND`、`APP_PORT` 调整）。不要为了原生启动示例误以为 Compose 的数据库能直接通过宿主 5432 访问。生产通过 HTTPS 代理访问；宿主代理可连接本地端口，容器代理应使用同一受控网络的应用地址。
 
@@ -356,7 +356,7 @@ Compose 使用 PostgreSQL 16，数据库 `aisop`、角色 `aisop`；数据库与
 
 **本地文件系统与 PostgreSQL 不是分布式原子事务**。上传文件写入到数据库记录提交之间若进程崩溃，可能遗留未入库的孤儿文件，删除队列不保证能发现所有这类文件；不要直接把扫描到的未知文件在线批量删除，维护时应先暂停写入、核对媒体记录和删除队列后再处理。
 
-备份时暂停所有实例的写入和后台清理（最简单是停止应用，保留数据库运行），将**数据库与整个媒体目录/卷作为同一一致性集合一起快照或备份**，然后恢复服务；不要只备份其中一方。恢复时一起还原到对应时间点，检查目录权限、迁移版本、就绪检查及文件可读性，再开放写入。`docker compose down -v` 会删除命名卷，不是备份命令。
+备份时暂停所有实例的写入和后台清理（最简单是停止应用，保留数据库运行），将**数据库与整个媒体目录/卷作为同一一致性集合一起快照或备份**，然后恢复服务；不要只备份其中一方。恢复时一起还原到对应时间点，检查目录权限、数据库结构、就绪检查及文件可读性，再开放写入。`docker compose down -v` 会删除命名卷，不是备份命令。
 
 ## 开发与验证
 
@@ -371,7 +371,7 @@ make migrate
 make bootstrap-admin
 ```
 
-集成测试只使用 `TEST_DATABASE_URL`，不会回退到应用的 `DATABASE_URL`。请使用专用测试数据库；角色须有在该数据库中 **CREATE SCHEMA** 的权限。每个使用数据库工具的测试创建随机名称的独立 schema、设置 search_path、执行迁移，并在清理时仅删除自己的 schema；不对业务表执行破坏性 TRUNCATE。异常中断可能留下测试 schema，确认没有测试运行后再按名字清理。
+集成测试只使用 `TEST_DATABASE_URL`，不会回退到应用的 `DATABASE_URL`。请使用专用测试数据库；角色须有在该数据库中 **CREATE SCHEMA** 的权限。每个使用数据库工具的测试创建随机名称的独立 schema、设置 search_path、执行初始建表脚本，并在清理时仅删除自己的 schema；不对业务表执行破坏性 TRUNCATE。异常中断可能留下测试 schema，确认没有测试运行后再按名字清理。
 
 ```bash
 # 在安全编辑的本地环境中设置指向专用测试库的 TEST_DATABASE_URL，勿把真实密码写进历史。

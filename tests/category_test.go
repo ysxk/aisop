@@ -1,15 +1,11 @@
 package tests
 
 import (
-	"context"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
-	"github.com/ysxk/aisop/internal/database"
-	"github.com/ysxk/aisop/internal/testutil"
 )
 
 func TestCategoryLifecycle(t *testing.T) {
@@ -126,33 +122,5 @@ func TestCategoryLifecycle(t *testing.T) {
 	got := f.json("GET", "/api/v1/products?category_id=none", "", nil, 200)
 	if got.object["total"] != float64(2) {
 		t.Fatal("category deletion changed products")
-	}
-}
-
-func TestCategoryMigrationPreservesExistingProducts(t *testing.T) {
-	pool := testutil.Database(t)
-	ctx := context.Background()
-	if _, err := pool.Exec(ctx, `ALTER TABLE products DROP COLUMN category_id; DROP TABLE categories; DELETE FROM schema_migrations WHERE name='003_categories.sql'`); err != nil {
-		t.Fatal(err)
-	}
-	var id string
-	var updated time.Time
-	if err := pool.QueryRow(ctx, `INSERT INTO products(sku,name,description,price_minor,stock,status) VALUES ('LEGACY','原有商品','原有说明',12345,7,'published') RETURNING id::text,updated_at`).Scan(&id, &updated); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 2; i++ {
-		if err := database.Migrate(ctx, pool); err != nil {
-			t.Fatal(err)
-		}
-	}
-	var name, description, status string
-	var price, stock int64
-	var categoryID *string
-	var after time.Time
-	if err := pool.QueryRow(ctx, `SELECT name,description,price_minor,stock,status,category_id::text,updated_at FROM products WHERE id=$1`, id).Scan(&name, &description, &price, &stock, &status, &categoryID, &after); err != nil {
-		t.Fatal(err)
-	}
-	if name != "原有商品" || description != "原有说明" || price != 12345 || stock != 7 || status != "published" || categoryID != nil || !updated.Equal(after) {
-		t.Fatal("migration changed existing product")
 	}
 }

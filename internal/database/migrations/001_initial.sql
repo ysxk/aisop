@@ -12,6 +12,15 @@ CREATE TABLE sessions (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX sessions_expiry_idx ON sessions(expires_at);
+CREATE TABLE categories (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name varchar(100) NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
+    description varchar(2000) NOT NULL DEFAULT '',
+    sort_order bigint NOT NULL DEFAULT 0 CHECK (sort_order >= 0),
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX categories_sort_idx ON categories(sort_order, name, id);
 CREATE TABLE products (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     sku varchar(100) NOT NULL UNIQUE CHECK (length(trim(sku)) > 0),
@@ -21,10 +30,12 @@ CREATE TABLE products (
     currency varchar(3) NOT NULL DEFAULT 'CNY' CHECK (currency ~ '^[A-Z]{3}$'),
     stock bigint NOT NULL DEFAULT 0 CHECK (stock >= 0),
     status text NOT NULL DEFAULT 'draft' CHECK (status IN ('draft', 'published', 'archived')),
+    category_id uuid REFERENCES categories(id) ON DELETE RESTRICT,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX products_status_created_idx ON products(status, created_at DESC, id DESC);
+CREATE INDEX products_category_created_idx ON products(category_id, created_at DESC, id DESC);
 CREATE TABLE media (
     id uuid PRIMARY KEY,
     kind text NOT NULL CHECK (kind IN ('image', 'video')),
@@ -47,3 +58,7 @@ CREATE TABLE product_media (
 );
 CREATE UNIQUE INDEX product_media_cover_idx ON product_media(product_id) WHERE is_cover;
 CREATE INDEX product_media_media_idx ON product_media(media_id);
+CREATE TABLE file_deletions (
+    storage_key text PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
