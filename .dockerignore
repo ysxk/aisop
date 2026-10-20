@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+bin/
+data/
+coverage*
+*.test
+*.out
+*.log
+.DS_Store

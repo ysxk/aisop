@@ -1,0 +1,514 @@
+openapi: 3.0.3
+info:
+  title: aisop 商城后端 API
+  version: 1.0.0
+  description: |
+    Go + PostgreSQL 模块化商品与媒体后端。无普通用户、订单或支付系统。
+    管理操作使用管理员 Bearer Token；公开读取仅返回 published 商品及其关联文件。
+    JSON 请求最大 1 MiB，拒绝未知字段和显式 null。PATCH 省略字段表示不变，零值可正常更新。
+    金额 price_minor 使用最小货币单位整数（CNY 为分）；status 为 draft / published / archived。
+    列表固定按 created_at DESC、id DESC 排序。所有时间为 RFC3339，ID 为 UUID。
+    错误响应含稳定 code 与 request_id，响应头 X-Request-ID 可用于排查。
+servers:
+  - url: /
+tags:
+  - name: Public
+  - name: Auth
+  - name: Products
+  - name: Media
+  - name: Operations
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [Operations]
+      summary: 进程存活检查
+      responses:
+        '200': {description: 进程存活, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}, example: {status: ok}}}}
+  /readyz:
+    get:
+      operationId: getReadiness
+      tags: [Operations]
+      summary: 数据库与媒体目录就绪检查
+      responses:
+        '200': {description: 就绪, content: {application/json: {schema: {$ref: '#/components/schemas/Health'}, example: {status: ready}}}}
+        '503': {$ref: '#/components/responses/Error'}
+  /openapi.yaml:
+    get:
+      operationId: getOpenAPISpecification
+      tags: [Operations]
+      summary: 获取机器可读 API 契约
+      responses:
+        '200': {description: OpenAPI YAML, content: {application/yaml: {schema: {type: string}}}}
+  /api/v1/admin/auth/login:
+    post:
+      operationId: loginAdmin
+      tags: [Auth]
+      summary: 管理员登录并签发会话令牌
+      description: 每个 TCP 对端 IP 每分钟最多 10 次、全局每分钟 100 次尝试。不信任 X-Forwarded-For。令牌仅返回一次，请安全保存。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Credentials'}
+            example: {username: admin, password: 'example-only-password'}
+      responses:
+        '200':
+          description: 登录成功
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Login'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '429':
+          description: 登录尝试过多
+          headers: {Retry-After: {schema: {type: integer}, description: 重试前等待秒数}}
+          content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/auth/logout:
+    post:
+      operationId: logoutAdmin
+      tags: [Auth]
+      summary: 立即撤销当前会话
+      security: [{bearerAuth: []}]
+      responses:
+        '204': {description: 已退出，无响应体}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/auth/me:
+    get:
+      operationId: getCurrentAdmin
+      tags: [Auth]
+      summary: 获取当前管理员信息
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {description: 管理员, content: {application/json: {schema: {$ref: '#/components/schemas/Admin'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/auth/password:
+    put:
+      operationId: changeAdminPassword
+      tags: [Auth]
+      summary: 修改密码并撤销全部会话
+      description: 成功后必须使用新密码重新登录。密码长度为 12 至 72 字节，不是字符数。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [current_password, new_password]
+              properties:
+                current_password: {type: string, format: password}
+                new_password: {type: string, format: password, minLength: 1, maxLength: 72, description: UTF-8 编码后必须为 12–72 字节}
+            example: {current_password: 'example-only-password', new_password: 'another-example-password'}
+      responses:
+        '204': {description: 密码已更新，全部会话已撤销}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/products:
+    get:
+      operationId: listPublishedProducts
+      tags: [Public]
+      summary: 分页搜索已上架商品
+      description: 始终只返回 published 商品，不能使用查询参数覆盖公开状态限制。
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Query'}
+      responses:
+        '200': {$ref: '#/components/responses/ProductList'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/products/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    get:
+      operationId: getPublishedProduct
+      tags: [Public]
+      summary: 读取已上架商品与有序媒体
+      description: 草稿、下架或不存在商品均返回 404。
+      responses:
+        '200': {$ref: '#/components/responses/Product'}
+        '404': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/products:
+    get:
+      operationId: listAdminProducts
+      tags: [Products]
+      summary: 分页搜索所有商品
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Query'}
+        - {name: status, in: query, schema: {$ref: '#/components/schemas/ProductStatus'}}
+      responses:
+        '200': {$ref: '#/components/responses/ProductList'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createProduct
+      tags: [Products]
+      summary: 创建商品，默认草稿
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: '#/components/schemas/ProductInput'}
+                - {type: object, required: [sku, name, price_minor]}
+            example: {sku: SKU-001, name: 示例商品, description: 商品说明, price_minor: 19900, currency: CNY, stock: 10, status: draft}
+      responses:
+        '201': {$ref: '#/components/responses/Product'}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/products/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    get:
+      operationId: getAdminProduct
+      tags: [Products]
+      summary: 读取任意状态商品
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {$ref: '#/components/responses/Product'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: updateProduct
+      tags: [Products]
+      summary: 修改商品或上下架
+      description: 至少提供一个字段。description 可设为空字符串，price_minor 和 stock 可设为 0。null 不合法。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ProductInput'}
+            example: {status: published}
+      responses:
+        '200': {$ref: '#/components/responses/Product'}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteProduct
+      tags: [Products]
+      summary: 删除商品并解除媒体关联，不删除媒体文件
+      security: [{bearerAuth: []}]
+      responses:
+        '204': {description: 已删除}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/products/{id}/media:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    put:
+      operationId: replaceProductMedia
+      tags: [Products]
+      summary: 原子替换商品媒体、展示顺序和封面
+      description: 数组顺序决定从 0 开始的 position；空数组解除全部关联。封面必须是数组内的图片，省略或空字符串表示无封面。失败时保持原关联不变。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [media_ids]
+              properties:
+                media_ids: {type: array, maxItems: 100, uniqueItems: true, items: {type: string, format: uuid}}
+                cover_media_id: {type: string, description: 已关联图片的 UUID 或空字符串}
+            example: {media_ids: [5b2c4455-fba9-4a79-a3e3-f04a701171d6], cover_media_id: 5b2c4455-fba9-4a79-a3e3-f04a701171d6}
+      responses:
+        '200': {$ref: '#/components/responses/Product'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/media/images:
+    post:
+      operationId: uploadImage
+      tags: [Media]
+      summary: 上传 JPEG、PNG、GIF 或 WebP 图片
+      description: 默认上限 10 MiB，可配置。检查真实内容并解码首帧，最大 2500 万像素。拒绝 SVG、HTML。只接受一个 file 字段，元数据随后通过 PATCH 修改。
+      security: [{bearerAuth: []}]
+      requestBody: {$ref: '#/components/requestBodies/Upload'}
+      responses:
+        '201': {$ref: '#/components/responses/Media'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/media/videos:
+    post:
+      operationId: uploadVideo
+      tags: [Media]
+      summary: 流式上传 MP4 或 WebM 视频
+      description: 默认上限 200 MiB，可配置。检查容器签名，不执行全片解码、编解码器兼容性检测、病毒扫描或转码。只接受一个 file 字段。
+      security: [{bearerAuth: []}]
+      requestBody: {$ref: '#/components/requestBodies/Upload'}
+      responses:
+        '201': {$ref: '#/components/responses/Media'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/media:
+    get:
+      operationId: listMedia
+      tags: [Media]
+      summary: 分页列出媒体
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+        - {name: kind, in: query, schema: {type: string, enum: [image, video]}}
+      responses:
+        '200':
+          description: 分页媒体
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - {$ref: '#/components/schemas/Page'}
+                  - {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/Media'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/media/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    get:
+      operationId: getMedia
+      tags: [Media]
+      summary: 获取媒体元数据
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {$ref: '#/components/responses/Media'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: updateMediaMetadata
+      tags: [Media]
+      summary: 修改媒体展示名称或替代文本
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                display_name: {type: string, minLength: 1, maxLength: 255}
+                alt_text: {type: string, maxLength: 1000}
+            example: {display_name: 商品正面, alt_text: 黑色商品的正面图片}
+      responses:
+        '200': {$ref: '#/components/responses/Media'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteMedia
+      tags: [Media]
+      summary: 删除未被引用的媒体
+      description: 被任意商品引用时返回 409。记录与文件删除意图事务提交，失败的文件清理由后台每分钟及重启时重试。
+      security: [{bearerAuth: []}]
+      responses:
+        '204': {description: 媒体已删除且不可访问}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/media/{id}/content:
+    parameters:
+      - {$ref: '#/components/parameters/ID'}
+      - {$ref: '#/components/parameters/Range'}
+      - {$ref: '#/components/parameters/IfNoneMatch'}
+      - {$ref: '#/components/parameters/IfRange'}
+    get:
+      operationId: getPublishedMediaContent
+      tags: [Public]
+      summary: 读取已上架商品关联的媒体文件
+      description: 每次读取（包括条件请求）先验证关联商品状态。未关联、仅关联草稿/下架商品或不存在时返回 404。客户端必须重新验证缓存；不要在代理上覆盖 Cache-Control。
+      responses: &contentResponses
+        '200': {$ref: '#/components/responses/Content'}
+        '206': {$ref: '#/components/responses/PartialContent'}
+        '304': {description: 文件未修改，且当前仍有读取权限}
+        '416': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+    head:
+      operationId: headPublishedMediaContent
+      tags: [Public]
+      summary: 获取公开媒体文件头，不返回文件体
+      responses: *contentResponses
+  /api/v1/admin/media/{id}/content:
+    parameters:
+      - {$ref: '#/components/parameters/ID'}
+      - {$ref: '#/components/parameters/Range'}
+      - {$ref: '#/components/parameters/IfNoneMatch'}
+      - {$ref: '#/components/parameters/IfRange'}
+    get:
+      operationId: getAdminMediaContent
+      tags: [Media]
+      summary: 管理员读取任意媒体文件
+      security: [{bearerAuth: []}]
+      responses: *contentResponses
+    head:
+      operationId: headAdminMediaContent
+      tags: [Media]
+      summary: 管理员获取任意媒体文件头
+      security: [{bearerAuth: []}]
+      responses: *contentResponses
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer, description: 登录响应的随机会话令牌，非 JWT；退出、过期或改密后无效}
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    Page: {name: page, in: query, schema: {type: integer, minimum: 1, maximum: 1000000, default: 1}}
+    Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+    Query: {name: q, in: query, description: SKU 或名称的字面子串，不把百分号或下划线当通配符, schema: {type: string, maxLength: 200}}
+    Range: {name: Range, in: header, schema: {type: string}, example: 'bytes=0-1023'}
+    IfNoneMatch: {name: If-None-Match, in: header, schema: {type: string}, description: 前次响应的 ETag}
+    IfRange: {name: If-Range, in: header, schema: {type: string}, description: ETag 或 HTTP 日期}
+  requestBodies:
+    Upload:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [file]
+            properties:
+              file: {type: string, format: binary, description: 本地图片或视频文件；MIME 由实际内容判定}
+  responses:
+    Error:
+      description: |
+        400 invalid_request：参数或 JSON 无效；401 unauthorized：凭据错误或会话无效；
+        403 origin_not_allowed：跨域预检被拒绝；404 not_found；405 method_not_allowed；
+        409 conflict：SKU 重复、媒体被引用或关联冲突；413 payload_too_large；
+        415 unsupported_media_type；416 invalid_range；429 rate_limited；500 internal_error；503 not_ready。
+        具体 code 以响应为准。内部 SQL、文件路径和凭据不会返回。
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+          example: {error: {code: not_found, message: Resource not found, request_id: 5b2c4455-fba9-4a79-a3e3-f04a701171d6}}
+    Product:
+      description: 商品对象，media 按 position 升序
+      content: {application/json: {schema: {$ref: '#/components/schemas/Product'}}}
+    ProductList:
+      description: 分页商品
+      content:
+        application/json:
+          schema:
+            allOf:
+              - {$ref: '#/components/schemas/Page'}
+              - {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/Product'}}}}
+          example: {items: [], page: 1, limit: 20, total: 0}
+    Media:
+      description: 媒体对象
+      content: {application/json: {schema: {$ref: '#/components/schemas/Media'}}}
+    Content:
+      description: 文件内容，HEAD 仅返回响应头
+      headers:
+        Accept-Ranges: {schema: {type: string}, example: bytes}
+        ETag: {schema: {type: string}}
+        Cache-Control: {schema: {type: string}, example: 'private, no-cache, max-age=0, must-revalidate'}
+        Content-Length: {schema: {type: integer, format: int64}}
+        X-Content-Type-Options: {schema: {type: string}, example: nosniff}
+      content:
+        image/jpeg: {schema: {type: string, format: binary}}
+        image/png: {schema: {type: string, format: binary}}
+        image/gif: {schema: {type: string, format: binary}}
+        image/webp: {schema: {type: string, format: binary}}
+        video/mp4: {schema: {type: string, format: binary}}
+        video/webm: {schema: {type: string, format: binary}}
+    PartialContent:
+      description: 请求的文件范围，多个范围可返回 multipart/byteranges
+      headers:
+        Content-Range: {schema: {type: string}, example: 'bytes 0-1023/2048'}
+        Accept-Ranges: {schema: {type: string}, example: bytes}
+      content:
+        '*/*': {schema: {type: string, format: binary}}
+  schemas:
+    Health:
+      type: object
+      required: [status]
+      properties: {status: {type: string, enum: [ok, ready]}}
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: {type: string}
+            message: {type: string}
+            fields: {type: object, additionalProperties: {type: string}}
+            request_id: {type: string, format: uuid}
+    Credentials:
+      type: object
+      additionalProperties: false
+      required: [username, password]
+      properties:
+        username: {type: string, minLength: 1, maxLength: 100}
+        password: {type: string, format: password, minLength: 1, maxLength: 72, description: UTF-8 编码后 12–72 字节}
+    Admin:
+      type: object
+      required: [id, username, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        username: {type: string}
+        created_at: {type: string, format: date-time}
+    Login:
+      type: object
+      required: [token, token_type, expires_at, admin]
+      properties:
+        token: {type: string, description: 32 字节随机数的 URL-safe Base64 编码}
+        token_type: {type: string, enum: [Bearer]}
+        expires_at: {type: string, format: date-time}
+        admin: {$ref: '#/components/schemas/Admin'}
+    Page:
+      type: object
+      required: [page, limit, total]
+      properties:
+        page: {type: integer, minimum: 1}
+        limit: {type: integer, minimum: 1, maximum: 100}
+        total: {type: integer, format: int64, minimum: 0}
+    ProductStatus: {type: string, enum: [draft, published, archived]}
+    ProductInput:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        sku: {type: string, minLength: 1, maxLength: 100}
+        name: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, maxLength: 20000}
+        price_minor: {type: integer, format: int64, minimum: 0, description: 最小货币单位整数，例如人民币分}
+        currency: {type: string, pattern: '^[A-Z]{3}$', default: CNY}
+        stock: {type: integer, format: int64, minimum: 0, default: 0}
+        status: {$ref: '#/components/schemas/ProductStatus'}
+    Product:
+      type: object
+      required: [id, sku, name, description, price_minor, currency, stock, status, created_at, updated_at, media]
+      properties:
+        id: {type: string, format: uuid}
+        sku: {type: string}
+        name: {type: string}
+        description: {type: string}
+        price_minor: {type: integer, format: int64, minimum: 0}
+        currency: {type: string, pattern: '^[A-Z]{3}$'}
+        stock: {type: integer, format: int64, minimum: 0}
+        status: {$ref: '#/components/schemas/ProductStatus'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        media:
+          type: array
+          items:
+            allOf:
+              - {$ref: '#/components/schemas/Media'}
+              - type: object
+                required: [position, is_cover]
+                properties:
+                  position: {type: integer, minimum: 0}
+                  is_cover: {type: boolean}
+    Media:
+      type: object
+      required: [id, kind, mime_type, size_bytes, original_name, display_name, alt_text, created_at, updated_at, content_url]
+      properties:
+        id: {type: string, format: uuid}
+        kind: {type: string, enum: [image, video]}
+        mime_type: {type: string, enum: [image/jpeg, image/png, image/gif, image/webp, video/mp4, video/webm]}
+        size_bytes: {type: integer, format: int64, minimum: 1}
+        original_name: {type: string}
+        display_name: {type: string, minLength: 1, maxLength: 255}
+        alt_text: {type: string, maxLength: 1000}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        content_url: {type: string, description: 相对当前 API 主机的文件读取 URL}

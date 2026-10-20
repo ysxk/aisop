@@ -1,0 +1,55 @@
+x-app: &app
+  image: aisop:local
+  build:
+    context: .
+  environment:
+    DATABASE_URL: "postgres://aisop:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a URL-safe password}@db:5432/aisop?sslmode=disable"
+    ADDR: ":8080"
+    MEDIA_DIR: /data/media
+    SESSION_TTL: "${SESSION_TTL:-24h}"
+    IMAGE_MAX_BYTES: "${IMAGE_MAX_BYTES:-10485760}"
+    VIDEO_MAX_BYTES: "${VIDEO_MAX_BYTES:-209715200}"
+    ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-}"
+  volumes:
+    - media_data:/data/media
+
+services:
+  db:
+    image: postgres:16-bookworm
+    environment:
+      POSTGRES_DB: aisop
+      POSTGRES_USER: aisop
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD to a URL-safe password}"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  migrate:
+    <<: *app
+    command: ["migrate"]
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+
+  app:
+    <<: *app
+    command: ["serve"]
+    ports:
+      - "${APP_BIND:-127.0.0.1}:${APP_PORT:-8080}:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  media_data:

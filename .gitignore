@@ -1,0 +1,11 @@
+.env
+.env.*
+!.env.example
+.pi/
+/bin/
+/aisop
+/data/
+/uploads/
+/coverage.out
+*.test
+.DS_Store
