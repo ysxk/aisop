@@ -28,7 +28,7 @@ func TestOpenAPI(t *testing.T) {
 			}
 		}
 	}
-	if len(seen) != 25 {
-		t.Fatalf("expected 25 documented operations, got %d", len(seen))
+	if len(seen) != 32 {
+		t.Fatalf("expected 32 documented operations, got %d", len(seen))
 	}
 }

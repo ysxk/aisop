@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/ysxk/aisop/api"
 	"github.com/ysxk/aisop/internal/auth"
+	"github.com/ysxk/aisop/internal/category"
 	"github.com/ysxk/aisop/internal/config"
 	"github.com/ysxk/aisop/internal/httpapi"
 	"github.com/ysxk/aisop/internal/media"
@@ -32,6 +33,7 @@ func New(c config.Config, pool *pgxpool.Pool, logger *slog.Logger) (*App, error)
 	a := &App{Auth: auth.New(pool, c.SessionTTL), Media: media.New(pool, files), Files: files}
 	mux := http.NewServeMux()
 	a.Auth.Register(mux)
+	category.Register(mux, pool, a.Auth.Require)
 	product.Register(mux, pool, a.Auth.Require)
 	a.Media.Register(mux, a.Auth.Require, c.ImageMaxBytes, c.VideoMaxBytes)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { httpapi.JSON(w, 200, map[string]string{"status": "ok"}) })

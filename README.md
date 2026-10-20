@@ -1,6 +1,6 @@
 # aisop
 
-[github.com/ysxk/aisop](https://github.com/ysxk/aisop) 是一个纯后端的 Go 1.26 + PostgreSQL 16+ 商品与媒体管理服务。提供单管理员认证、商品草稿/上架/下架、图片/视频上传、有序媒体关联及公开读取；**不包含普通用户注册、购物车、订单、支付或前端**。
+[github.com/ysxk/aisop](https://github.com/ysxk/aisop) 是一个纯后端的 Go 1.26 + PostgreSQL 16+ 商品与媒体管理服务。提供单管理员认证、商品分类、商品草稿/上架/下架、图片/视频上传、有序媒体关联及公开读取；**不包含普通用户注册、购物车、订单、支付或前端**。
 
 ## 模块结构
 
@@ -10,6 +10,7 @@ api/                      嵌入二进制的 OpenAPI 契约及契约测试
 internal/
   app/                    模块装配、路由、中间件、健康检查、清理调度
   auth/                   认证 repository / service / handler、会话、登录限流
+  category/               分类 repository / service / handler、公开读取与管理
   config/                 环境变量解析与校验
   database/               PostgreSQL 连接、事务迁移与 migrations/*.sql
   httpapi/                严格 JSON 解码、统一错误、分页、请求 ID
@@ -230,6 +231,49 @@ unset -f login auth_curl
 
 退出成功为 204，撤销当前会话；密码修改撤销**所有**会话。令牌为 32 字节加密随机数的无填充 URL-safe Base64（非 JWT），只在登录响应中返回；数据库只保存其 SHA256 十六进制摘要。每次受保护请求查询数据库并检查有效期，无本地认证缓存；过期必须重新登录，退出或改密后也不能继续使用旧令牌。
 
+## 商品分类
+
+分类为**平级分类**，每个商品可属于一个分类，也可不分类。分类名称去除首尾空白后须唯一（大小写敏感，1–100 字符），公开描述最多 2000 字符，`sort_order` 为非负整数、默认 0。分类元数据均可公开读取，包括没有上架商品的分类；不要把内部备注写入分类描述。分类列表按 `sort_order ASC,name ASC,id ASC` 排列。
+
+升级已有部署时，先备份并停止应用，使用新版二进制执行 `./bin/aisop migrate`，再启动服务。新增 `003_categories.sql` 迁移不会删除或修改已有商品内容，原有商品默认未分类。
+
+商品创建和 PATCH 接受 `category_id`：
+
+- UUID：分配或迁移到该分类；分类不存在返回 409。
+- 空字符串 `""`：清除分类；创建时也表示未分类。
+- 省略：创建时未分类，PATCH 时保持原分类。
+- `null`：返回 400，与其他 JSON 字段的约定一致。
+
+商品详情及列表始终返回 `category_id`，未分类时为 `""`。商品列表支持 `?category_id=<UUID>`，或 `?category_id=none` 查询未分类商品；可与分页、`q` 和管理员 `status` 筛选同时使用。公开商品接口无论如何筛选都只返回已上架商品。
+
+下面示例使用前文登录步骤中的 `BASE`、`TOKEN` 和 `auth_curl`，请在退出前执行：
+
+```bash
+CATEGORY_ID=$(auth_curl -X POST "$BASE/api/v1/admin/categories" \
+  -H 'Content-Type: application/json' \
+  --data-binary '{"name":"鞋靴","description":"鞋靴商品","sort_order":10}' | jq -er '.id')
+
+CLASSIFIED_ID=$(jq -n --arg category "$CATEGORY_ID" \
+  '{sku:"CATEGORY-DEMO",name:"示例运动鞋",price_minor:29900,category_id:$category}' |
+  auth_curl -X POST "$BASE/api/v1/admin/products" \
+    -H 'Content-Type: application/json' --data-binary @- | jq -er '.id')
+
+curl --fail-with-body --silent --show-error "$BASE/api/v1/categories?limit=20" | jq .
+auth_curl "$BASE/api/v1/admin/products?category_id=$CATEGORY_ID" | jq .
+# 新建商品默认草稿，所以此公开筛选不会包含刚创建的商品。
+curl --fail-with-body --silent --show-error "$BASE/api/v1/products?category_id=$CATEGORY_ID" | jq .
+
+auth_curl -X PATCH "$BASE/api/v1/admin/categories/$CATEGORY_ID" \
+  -H 'Content-Type: application/json' --data-binary '{"name":"运动鞋","sort_order":0}' | jq .
+
+# 被任意商品（含草稿、下架商品）引用的分类不能删除，返回 409；先迁移商品或清除分类。
+auth_curl -X PATCH "$BASE/api/v1/admin/products/$CLASSIFIED_ID" \
+  -H 'Content-Type: application/json' --data-binary '{"category_id":""}' | jq .
+auth_curl -X DELETE "$BASE/api/v1/admin/categories/$CATEGORY_ID" -o /dev/null
+auth_curl -X DELETE "$BASE/api/v1/admin/products/$CLASSIFIED_ID" -o /dev/null
+unset CATEGORY_ID CLASSIFIED_ID
+```
+
 ## API 路由速查
 
 下表“管理员”均指 `Authorization: Bearer <token>`；只有登录接口不需要现有会话。
@@ -243,9 +287,13 @@ unset -f login auth_curl
 | POST | `/api/v1/admin/auth/logout` | 管理员，撤销当前会话 |
 | GET | `/api/v1/admin/auth/me` | 管理员，当前身份 |
 | PUT | `/api/v1/admin/auth/password` | 管理员，改密并撤销全部会话 |
-| GET | `/api/v1/products` | 公开，仅 published；`page`、`limit`、`q` |
+| GET | `/api/v1/categories` | 公开，分类分页列表 |
+| GET | `/api/v1/categories/{id}` | 公开，分类详情 |
+| GET / POST | `/api/v1/admin/categories` | 管理员，分类列表 / 创建 |
+| GET / PATCH / DELETE | `/api/v1/admin/categories/{id}` | 管理员，分类详情 / 修改 / 删除 |
+| GET | `/api/v1/products` | 公开，仅 published；`page`、`limit`、`q`、`category_id` |
 | GET | `/api/v1/products/{id}` | 公开，仅 published |
-| GET / POST | `/api/v1/admin/products` | 管理员，列表 / 创建；列表可加 `status` |
+| GET / POST | `/api/v1/admin/products` | 管理员，列表 / 创建；列表可加 `category_id`、`status` |
 | GET / PATCH / DELETE | `/api/v1/admin/products/{id}` | 管理员，详情 / 更新状态及字段 / 删除 |
 | PUT | `/api/v1/admin/products/{id}/media` | 管理员，原子替换顺序与封面 |
 | POST | `/api/v1/admin/media/images` | 管理员，图片上传 |
@@ -255,7 +303,7 @@ unset -f login auth_curl
 | GET / HEAD | `/api/v1/admin/media/{id}/content` | 管理员，任意媒体内容 |
 | GET / HEAD | `/api/v1/media/{id}/content` | 公开，仅有关联 published 商品的媒体 |
 
-JSON 请求需 `Content-Type: application/json`，上限 1 MiB；拒绝未知字段和显式 `null`。PATCH 省略字段表示不改，允许的零值（如 `price_minor:0`、`stock:0`、`description:""`）正常更新，至少提供一个字段。分页响应为 `{items,page,limit,total}`，默认 `page=1`、`limit=20`，上限分别 1,000,000 和 100；按 `created_at DESC,id DESC` 排序。商品 `q` 按 SKU/名称字面子串搜索（最多 200 字符），`%` 和 `_` 不作为通配符。
+JSON 请求需 `Content-Type: application/json`，上限 1 MiB；拒绝未知字段和显式 `null`。PATCH 省略字段表示不改，允许的零值（如 `price_minor:0`、`stock:0`、`description:""`）正常更新，至少提供一个字段。分页响应为 `{items,page,limit,total}`，默认 `page=1`、`limit=20`，上限分别 1,000,000 和 100；商品和媒体按 `created_at DESC,id DESC` 排序，分类按 `sort_order ASC,name ASC,id ASC` 排序。商品 `q` 按 SKU/名称字面子串搜索（最多 200 字符），`%` 和 `_` 不作为通配符。
 
 错误结构为 `{"error":{"code":"...","message":"...","request_id":"..."}}`，可能带 `fields`；响应头带 `X-Request-ID`。常见状态：400 参数、401 凭据/会话、404 不存在或不可公开读取、409 冲突/仍有引用、413 太大、415 类型不支持、416 范围无效、429 登录限流、503 未就绪。详细字段、返回状态及 Range/ETag 条件请求见 OpenAPI。
 

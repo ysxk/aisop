@@ -1,13 +1,13 @@
 openapi: 3.0.3
 info:
   title: aisop 商城后端 API
-  version: 1.0.0
+  version: 1.1.0
   description: |
     Go + PostgreSQL 模块化商品与媒体后端。无普通用户、订单或支付系统。
-    管理操作使用管理员 Bearer Token；公开读取仅返回 published 商品及其关联文件。
+    管理操作使用管理员 Bearer Token；分类元数据可公开读取，商品仅公开 published 商品及其关联文件。
     JSON 请求最大 1 MiB，拒绝未知字段和显式 null。PATCH 省略字段表示不变，零值可正常更新。
     金额 price_minor 使用最小货币单位整数（CNY 为分）；status 为 draft / published / archived。
-    列表固定按 created_at DESC、id DESC 排序。所有时间为 RFC3339，ID 为 UUID。
+    商品和媒体列表按 created_at DESC、id DESC 排序；分类按 sort_order、name、id 升序排列。所有时间为 RFC3339，ID 为 UUID。
     错误响应含稳定 code 与 request_id，响应头 X-Request-ID 可用于排查。
 servers:
   - url: /
@@ -16,6 +16,7 @@ tags:
   - name: Auth
   - name: Products
   - name: Media
+  - name: Categories
   - name: Operations
 paths:
   /healthz:
@@ -115,6 +116,7 @@ paths:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit'}
         - {$ref: '#/components/parameters/Query'}
+        - {$ref: '#/components/parameters/CategoryFilter'}
       responses:
         '200': {$ref: '#/components/responses/ProductList'}
         default: {$ref: '#/components/responses/Error'}
@@ -139,6 +141,7 @@ paths:
         - {$ref: '#/components/parameters/Page'}
         - {$ref: '#/components/parameters/Limit'}
         - {$ref: '#/components/parameters/Query'}
+        - {$ref: '#/components/parameters/CategoryFilter'}
         - {name: status, in: query, schema: {$ref: '#/components/schemas/ProductStatus'}}
       responses:
         '200': {$ref: '#/components/responses/ProductList'}
@@ -344,6 +347,94 @@ paths:
       summary: 管理员获取任意媒体文件头
       security: [{bearerAuth: []}]
       responses: *contentResponses
+  /api/v1/categories:
+    get:
+      operationId: listCategories
+      tags: [Public, Categories]
+      summary: 分页读取商品分类
+      description: 分类元数据公开，包括尚无上架商品的分类；不返回草稿商品信息。按 sort_order、name、id 升序排列。
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {$ref: '#/components/responses/CategoryList'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/categories/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    get:
+      operationId: getCategory
+      tags: [Public, Categories]
+      summary: 读取分类详情
+      responses:
+        '200': {$ref: '#/components/responses/Category'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/categories:
+    get:
+      operationId: listAdminCategories
+      tags: [Categories]
+      summary: 管理员分页读取分类
+      security: [{bearerAuth: []}]
+      parameters:
+        - {$ref: '#/components/parameters/Page'}
+        - {$ref: '#/components/parameters/Limit'}
+      responses:
+        '200': {$ref: '#/components/responses/CategoryList'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createCategory
+      tags: [Categories]
+      summary: 创建商品分类
+      description: 平级分类；name 去除首尾空白后须唯一，重名返回 409。分类元数据公开，不应包含内部备注。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - {$ref: '#/components/schemas/CategoryInput'}
+                - {type: object, required: [name]}
+            example: {name: 鞋靴, description: 鞋靴商品, sort_order: 10}
+      responses:
+        '201': {$ref: '#/components/responses/Category'}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/admin/categories/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    get:
+      operationId: getAdminCategory
+      tags: [Categories]
+      summary: 管理员读取分类详情
+      security: [{bearerAuth: []}]
+      responses:
+        '200': {$ref: '#/components/responses/Category'}
+        default: {$ref: '#/components/responses/Error'}
+    patch:
+      operationId: updateCategory
+      tags: [Categories]
+      summary: 修改分类名称、描述或排序
+      description: 至少一个字段；省略不变、拒绝 null；description 可设为空，sort_order 可设为 0。
+      security: [{bearerAuth: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CategoryInput'}
+            example: {name: 运动鞋, sort_order: 0}
+      responses:
+        '200': {$ref: '#/components/responses/Category'}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+    delete:
+      operationId: deleteCategory
+      tags: [Categories]
+      summary: 删除未被商品引用的分类
+      description: 被任意状态商品引用时返回 409；先修改这些商品的 category_id，将其迁移到其他分类或设为空字符串。不会级联删除商品。
+      security: [{bearerAuth: []}]
+      responses:
+        '204': {description: 分类已删除}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer, description: 登录响应的随机会话令牌，非 JWT；退出、过期或改密后无效}
@@ -352,6 +443,7 @@ components:
     Page: {name: page, in: query, schema: {type: integer, minimum: 1, maximum: 1000000, default: 1}}
     Limit: {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
     Query: {name: q, in: query, description: SKU 或名称的字面子串，不把百分号或下划线当通配符, schema: {type: string, maxLength: 200}}
+    CategoryFilter: {name: category_id, in: query, description: 指定分类 UUID，或 none 查询未分类商品；省略表示不按分类筛选。不存在的分类返回空列表，公开接口仍只返回 published 商品。, schema: {type: string}, example: 5b2c4455-fba9-4a79-a3e3-f04a701171d6}
     Range: {name: Range, in: header, schema: {type: string}, example: 'bytes=0-1023'}
     IfNoneMatch: {name: If-None-Match, in: header, schema: {type: string}, description: 前次响应的 ETag}
     IfRange: {name: If-Range, in: header, schema: {type: string}, description: ETag 或 HTTP 日期}
@@ -378,6 +470,18 @@ components:
         application/json:
           schema: {$ref: '#/components/schemas/Error'}
           example: {error: {code: not_found, message: Resource not found, request_id: 5b2c4455-fba9-4a79-a3e3-f04a701171d6}}
+    Category:
+      description: 分类对象，元数据可公开读取
+      content: {application/json: {schema: {$ref: '#/components/schemas/Category'}}}
+    CategoryList:
+      description: 按 sort_order、name、id 升序排列的分类列表
+      content:
+        application/json:
+          schema:
+            allOf:
+              - {$ref: '#/components/schemas/Page'}
+              - {type: object, required: [items], properties: {items: {type: array, items: {$ref: '#/components/schemas/Category'}}}}
+          example: {items: [], page: 1, limit: 20, total: 0}
     Product:
       description: 商品对象，media 按 position 升序
       content: {application/json: {schema: {$ref: '#/components/schemas/Product'}}}
@@ -474,9 +578,10 @@ components:
         currency: {type: string, pattern: '^[A-Z]{3}$', default: CNY}
         stock: {type: integer, format: int64, minimum: 0, default: 0}
         status: {$ref: '#/components/schemas/ProductStatus'}
+        category_id: {type: string, description: 分类 UUID 或空字符串（未分类）；创建时省略默认未分类，PATCH 省略保持不变。拒绝 null；引用不存在的分类返回 409。}
     Product:
       type: object
-      required: [id, sku, name, description, price_minor, currency, stock, status, created_at, updated_at, media]
+      required: [id, sku, name, description, price_minor, currency, stock, status, category_id, created_at, updated_at, media]
       properties:
         id: {type: string, format: uuid}
         sku: {type: string}
@@ -486,6 +591,7 @@ components:
         currency: {type: string, pattern: '^[A-Z]{3}$'}
         stock: {type: integer, format: int64, minimum: 0}
         status: {$ref: '#/components/schemas/ProductStatus'}
+        category_id: {type: string, description: 分类 UUID；未分类时为固定空字符串，不是 null}
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         media:
@@ -512,3 +618,21 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         content_url: {type: string, description: 相对当前 API 主机的文件读取 URL}
+    CategoryInput:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        name: {type: string, minLength: 1, maxLength: 100, description: 首尾空白自动去除，名称唯一（大小写敏感）}
+        description: {type: string, maxLength: 2000, description: 公开描述，创建时默认空字符串}
+        sort_order: {type: integer, format: int64, minimum: 0, description: 越小越靠前，创建时默认 0}
+    Category:
+      type: object
+      required: [id, name, description, sort_order, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string, minLength: 1, maxLength: 100}
+        description: {type: string, maxLength: 2000}
+        sort_order: {type: integer, format: int64, minimum: 0}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}

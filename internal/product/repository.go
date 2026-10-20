@@ -15,7 +15,7 @@ import (
 
 type repository struct{ pool *pgxpool.Pool }
 
-const productColumns = `id, sku, name, description, price_minor, currency, stock, status, created_at, updated_at`
+const productColumns = `id, sku, name, description, price_minor, currency, stock, status, created_at, updated_at, COALESCE(category_id::text,'')`
 
 func uuidArray(ids []string) []pgtype.UUID {
 	values := make([]pgtype.UUID, len(ids))
@@ -27,7 +27,7 @@ func uuidArray(ids []string) []pgtype.UUID {
 
 func scanProduct(row pgx.Row) (Product, error) {
 	p := Product{Media: make([]Media, 0)}
-	err := row.Scan(&p.ID, &p.SKU, &p.Name, &p.Description, &p.PriceMinor, &p.Currency, &p.Stock, &p.Status, &p.CreatedAt, &p.UpdatedAt)
+	err := row.Scan(&p.ID, &p.SKU, &p.Name, &p.Description, &p.PriceMinor, &p.Currency, &p.Stock, &p.Status, &p.CreatedAt, &p.UpdatedAt, &p.CategoryID)
 	return p, err
 }
 
@@ -49,6 +49,14 @@ func productWhere(filter listFilter) (string, []any) {
 		args = append(args, "%"+escaped+"%")
 		n := len(args)
 		clauses = append(clauses, fmt.Sprintf(`(sku ILIKE $%d ESCAPE '\' OR name ILIKE $%d ESCAPE '\')`, n, n))
+	}
+	if filter.CategoryID != nil {
+		if *filter.CategoryID == "" {
+			clauses = append(clauses, "category_id IS NULL")
+		} else {
+			args = append(args, *filter.CategoryID)
+			clauses = append(clauses, fmt.Sprintf("category_id = $%d", len(args)))
+		}
 	}
 	if len(clauses) == 0 {
 		return "", args
@@ -157,9 +165,9 @@ func (repo *repository) get(ctx context.Context, id string, admin bool) (Product
 
 func (repo *repository) create(ctx context.Context, in productInput) (Product, error) {
 	return scanProduct(repo.pool.QueryRow(ctx, `INSERT INTO products
-		(sku, name, description, price_minor, currency, stock, status)
-		VALUES ($1, $2, COALESCE($3, ''), $4, COALESCE($5, 'CNY'), COALESCE($6::bigint, 0), COALESCE($7, 'draft'))
-		RETURNING `+productColumns, in.SKU, in.Name, in.Description, in.PriceMinor, in.Currency, in.Stock, in.Status))
+		(sku, name, description, price_minor, currency, stock, status, category_id)
+		VALUES ($1, $2, COALESCE($3, ''), $4, COALESCE($5, 'CNY'), COALESCE($6::bigint, 0), COALESCE($7, 'draft'), NULLIF($8::text, '')::uuid)
+		RETURNING `+productColumns, in.SKU, in.Name, in.Description, in.PriceMinor, in.Currency, in.Stock, in.Status, in.CategoryID))
 }
 
 func lockProduct(ctx context.Context, tx pgx.Tx, id string) error {
@@ -190,8 +198,9 @@ func (repo *repository) patch(ctx context.Context, id string, in productInput) (
 	p, err := scanProduct(tx.QueryRow(ctx, `UPDATE products SET
 		sku = COALESCE($2, sku), name = COALESCE($3, name), description = COALESCE($4, description),
 		price_minor = COALESCE($5, price_minor), currency = COALESCE($6, currency),
-		stock = COALESCE($7, stock), status = COALESCE($8, status), updated_at = clock_timestamp()
-		WHERE id = $1 RETURNING `+productColumns, id, in.SKU, in.Name, in.Description, in.PriceMinor, in.Currency, in.Stock, in.Status))
+		stock = COALESCE($7, stock), status = COALESCE($8, status), updated_at = clock_timestamp(),
+		category_id = CASE WHEN $9::text IS NULL THEN category_id ELSE NULLIF($9::text, '')::uuid END
+		WHERE id = $1 RETURNING `+productColumns, id, in.SKU, in.Name, in.Description, in.PriceMinor, in.Currency, in.Stock, in.Status, in.CategoryID))
 	if err != nil {
 		return Product{}, err
 	}

@@ -57,6 +57,13 @@ func validateProduct(in productInput, create bool) error {
 	if in.Status != nil && !validStatus(*in.Status) {
 		return httpapi.Invalid("Invalid status")
 	}
+	if in.CategoryID != nil && *in.CategoryID != "" {
+		id, err := uuid.Parse(*in.CategoryID)
+		if err != nil {
+			return httpapi.Invalid("category_id must be a UUID or empty")
+		}
+		*in.CategoryID = id.String()
+	}
 	return nil
 }
 
@@ -71,6 +78,20 @@ func parseFilter(r *http.Request, admin bool) (listFilter, error) {
 			return filter, httpapi.Invalid("Invalid q")
 		}
 		filter.Query = values[0]
+	}
+	if values, ok := r.URL.Query()["category_id"]; ok {
+		if len(values) != 1 {
+			return filter, httpapi.Invalid("Duplicate category_id")
+		}
+		categoryID := ""
+		if values[0] != "none" {
+			id, err := uuid.Parse(values[0])
+			if err != nil {
+				return filter, httpapi.Invalid("category_id must be a UUID or none")
+			}
+			categoryID = id.String()
+		}
+		filter.CategoryID = &categoryID
 	}
 	if admin {
 		filter.Status = ""

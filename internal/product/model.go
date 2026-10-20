@@ -15,6 +15,7 @@ type Product struct {
 	Currency    string    `json:"currency"`
 	Stock       int64     `json:"stock"`
 	Status      string    `json:"status"`
+	CategoryID  string    `json:"category_id"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
 	Media       []Media   `json:"media"`
@@ -43,6 +44,7 @@ type productInput struct {
 	Currency    *string `json:"currency"`
 	Stock       *int64  `json:"stock"`
 	Status      *string `json:"status"`
+	CategoryID  *string `json:"category_id"`
 }
 
 type associationInput struct {
@@ -52,8 +54,9 @@ type associationInput struct {
 
 type listFilter struct {
 	httpapi.Page
-	Query  string
-	Status string
+	Query      string
+	Status     string
+	CategoryID *string
 }
 
 type listResult struct {
